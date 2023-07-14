@@ -31,7 +31,7 @@ public class TemporalOrcOutputReducer
     private static final Logger LOG = LoggerFactory.getLogger(TemporalOrcOutputReducer.class);
     private static final String NULLSTRING = "null";
     private static final String DEFAULT_TIMESTAMP_FORMAT =
-        "yyyy[[-][/]]MM[[-][/]]dd[['T'][ ]]HH:mm:ss[ ][XXX][X]";
+        "yyyy[[-][/]]MM[[-][/]]dd[['T'][ ]]HH:mm:ss[ ][XXX][X]['.'S]";
     public static final String NULLSTRING_CONF_NAME = "null-string";
     public static final String DEFAULT_TIMESTAMP_FORMAT_CONF_NAME = "default-timestamp-format";
     

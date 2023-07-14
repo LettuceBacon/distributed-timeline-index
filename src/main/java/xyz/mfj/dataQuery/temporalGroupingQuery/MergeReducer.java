@@ -107,15 +107,23 @@ public class MergeReducer extends Reducer<OrcKey, OrcValue, NullWritable, NullWr
     {
         sTime = System.currentTimeMillis();
         sNanoTime = System.nanoTime();
-        // 对于一个key
-        // 获取每个row，查找一个row对应的mapper和stripe前一个值
-        // 聚合时，collect（前一个值，invalidFlag），collect（当前值，validFlag）
+        
         
         if (!schemaPrinted) {
             System.out.println(resultSchema);
             schemaPrinted = true;
         }
-            
+        else {
+            // 打印从前一个key到当前key这段时间上的聚合值
+            for (int i = 0; i < aggregators.length; ++i) {
+                rs.setFieldValue(i, TypeUtil.jObj2hadoopObj(aggregators[i].aggregate()));
+            }
+            System.out.println(rs);
+        }
+        
+        // 对于一个key
+        // 获取每个row，查找一个row对应的mapper和stripe前一个值
+        // 聚合时，collect（前一个值，invalidFlag），collect（当前值，validFlag）
         for (OrcValue value : values) { 
             OrcStruct row = (OrcStruct)value.value;
             RowVector rowVec = new RowVector(aggregators.length);
@@ -138,10 +146,6 @@ public class MergeReducer extends Reducer<OrcKey, OrcValue, NullWritable, NullWr
             preRows.put(prtRsName, rowVec);
         }
         
-        for (int i = 0; i < aggregators.length; ++i) {
-            rs.setFieldValue(i, TypeUtil.jObj2hadoopObj(aggregators[i].aggregate()));
-        }
-        // System.out.println(rs);
         
         eTime = System.currentTimeMillis();
         eNanoTime = System.nanoTime();
@@ -153,6 +157,12 @@ public class MergeReducer extends Reducer<OrcKey, OrcValue, NullWritable, NullWr
     protected void cleanup(Reducer<OrcKey, OrcValue, NullWritable, NullWritable>.Context context)
         throws IOException, InterruptedException 
     {
+        // 打印从最后一个key到endTime的聚合值
+        for (int i = 0; i < aggregators.length; ++i) {
+            rs.setFieldValue(i, TypeUtil.jObj2hadoopObj(aggregators[i].aggregate()));
+        }
+        System.out.println(rs);
+        
         Counter counter = context.getCounter("user", "reducer" + reducerId);
         counter.setValue(((Double)sumTime).longValue());
         LOG.info("Merge taken {} ms", sumTime);

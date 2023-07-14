@@ -1,110 +1,77 @@
 package xyz.mfj;
 
-import java.io.IOException;
+import java.util.Arrays;
+import java.util.function.Consumer;
+import java.util.function.Function;
 
-import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.fs.Path;
-import org.apache.orc.OrcConf;
-import org.apache.orc.TypeDescription;
+import org.apache.commons.cli.CommandLine;
+import org.apache.commons.cli.CommandLineParser;
+import org.apache.commons.cli.DefaultParser;
+import org.apache.commons.cli.HelpFormatter;
+import org.apache.commons.cli.Option;
+import org.apache.commons.cli.Options;
+import org.apache.commons.cli.ParseException;
 
-import xyz.mfj.Library;
-import xyz.mfj.DtlConf;
-import xyz.mfj.dataDefiniation.OrcTable;
-import xyz.mfj.dataDefiniation.OrcTableBuilder;
-import xyz.mfj.dataManipulation.CsvInputMapper;
-import xyz.mfj.dataManipulation.LoadDataExecutor;
-import xyz.mfj.dataManipulation.LoadDataExecutorBuilder;
-import xyz.mfj.enhanced.EnhancedVectorizedRowBatch;
+import xyz.mfj.dataProcess.DownloadYTTR2022;
+import xyz.mfj.dataProcess.ProcessYTTR2022;
 
 public class App 
 {
-    // 不同的运行模式，local是运行在mapreduce的local框架上，yarn是yarn框架上，mapreduce.framework.name
-    // private static final String RUNNING_MODEL = "local";
-    private static final String RUNNING_MODEL = "yarn";
-    
-    public static void main( String[] args ) throws ClassNotFoundException, IOException, InterruptedException 
-    {
-        Library lib = Library.getInstance();
-        Configuration libConf = lib.getConf();
-        // hadoop配置
-        if (RUNNING_MODEL.equals("yarn")) {
-            // 设置不生成_Success文件
-            libConf.set("mapreduce.fileoutputcommitter.marksuccessfuljobs", Boolean.FALSE.toString());
-            libConf.addResource(new Path("/home/mfj/hadoop/hadoop-3.3.4/etc/hadoop/core-site.xml"));
-            libConf.addResource(new Path("/home/mfj/hadoop/hadoop-3.3.4/etc/hadoop/hdfs-site.xml"));
-            libConf.addResource(new Path("/home/mfj/hadoop/hadoop-3.3.4/etc/hadoop/yarn-site.xml"));
-            libConf.addResource(new Path("/home/mfj/hadoop/hadoop-3.3.4/etc/hadoop/mapred-site.xml"));
-        }
-        
-        // 表配置
-        Configuration tblConf = new Configuration(libConf);
-        OrcConf.COMPRESS.setString(tblConf, "NONE");
-        // 256MB内存占用过大，不能用于stripeSize
-        // 128MB
-        // OrcConf.STRIPE_SIZE.setLong(tblConf, 134217728); 
-        // OrcConf.STRIPE_ROW_COUNT.setLong(tblConf, 2200000);
-        // OrcConf.ROWS_BETWEEN_CHECKS.setInt(tblConf, 2200000); // 40172 
-        // OrcConf.STRIPE_ROW_COUNT.setLong(tblConf, 2240000);
-        // OrcConf.ROWS_BETWEEN_CHECKS.setInt(tblConf, 2240000); // 40662 可能是因为减少了写入次数
-        // 64MB
-        tblConf.set("mapreduce.input.fileinputformat.split.minsize", "67108864");
-        tblConf.set(DtlConf.MAX_TASK_MEM, "2048M");
-        OrcConf.ROW_BATCH_SIZE.setInt(tblConf, EnhancedVectorizedRowBatch.INCREMENT_SIZE);
-        OrcConf.STRIPE_ROW_COUNT.setLong(tblConf, 1070000);
-        OrcConf.ROWS_BETWEEN_CHECKS.setInt(tblConf, 1070000);
-        // 8MB
-        // OrcConf.STRIPE_SIZE.setLong(tblConf, 8388608); 
-        // OrcConf.ROW_BATCH_SIZE.setInt(tblConf, 1370);
-        // // OrcConf.STRIPE_ROW_COUNT.setLong(tblConf, 137216);
-        // // OrcConf.ROWS_BETWEEN_CHECKS.setInt(tblConf, 137216);
-        // OrcConf.STRIPE_ROW_COUNT.setLong(tblConf, 137000);
-        // OrcConf.ROWS_BETWEEN_CHECKS.setInt(tblConf, 137000);
-        // tblConf.set("dfs.blocksize", "8388608");
-        // tblConf.set("mapreduce.input.fileinputformat.split.minsize", "8388608");
-        
-        
-        // 建表
-        OrcTable lineitembih = new OrcTableBuilder()
-            .createTable("lineitembih")
-            .addColumn("orderKey", TypeDescription.createLong())
-            .addColumn("partKey", TypeDescription.createLong())
-            .addColumn("supplierKey", TypeDescription.createLong())
-            .addColumn("lineNumber", TypeDescription.createInt())
-            .addColumn("quantity", TypeDescription.createDecimal())
-            .addColumn("extendedPrice", TypeDescription.createDecimal().withPrecision(10).withScale(2))
-            .addColumn("discount", TypeDescription.createDecimal().withPrecision(10).withScale(2))
-            .addColumn("tax", TypeDescription.createDecimal().withPrecision(10).withScale(2))
-            .addColumn("returnFlag", TypeDescription.createChar().withMaxLength(3))
-            .addColumn("status", TypeDescription.createChar().withMaxLength(3))
-            .addColumn("shipDate", TypeDescription.createDate())
-            .addColumn("commitDate", TypeDescription.createDate())
-            .addColumn("receiptDate", TypeDescription.createDate())
-            .addColumn("shipInstructions", TypeDescription.createChar().withMaxLength(25))
-            .addColumn("shipMode", TypeDescription.createChar().withMaxLength(10))
-            .addColumn("comment", TypeDescription.createVarchar().withMaxLength(44))
-            .addColumn("activeTimeBegin", TypeDescription.createDate())
-            .addColumn("activeTimeEnd", TypeDescription.createDate())
-            .periodFor("activeTime", "activeTimeBegin", "activeTimeEnd")
-            .withConf(tblConf)
+    public static void main(String[] args) throws ParseException {
+        // 定义选项
+        Option displayHelper = new Option("h", "help", false, "Dispaly usage and help.");
+        Option prepareData = Option.builder("p")
+            .longOpt("prepare-data")
+            .hasArg()
+            .argName("dataSet")
+            .desc("Prepare data set. Avaliable <dataSet>: \"yttr-2022\", \"lineitembih-<sf>\" where <sf> is the scale factor.")
             .build();
-        lib.cacheTable(lineitembih);
-            
-        String inputPathStr = null;
-        if (RUNNING_MODEL.equals("local")) {
-            inputPathStr = "/home/mfj/lineitembih/lineitembih-part-1-sf-0dot1.dat";
-            // inputPathStr = "/home/mfj/lineitembih/lineitembih-part-1-sf-1.dat";
+        Options options = new Options();
+        options.addOption(prepareData);
+        options.addOption(displayHelper);
+
+        HelpFormatter helpFormatter = new HelpFormatter();
+        String cmdSyntax = "[-h | --help] [ -p | --prepare-data [<dataset>] ] ";
+
+        // 解析命令
+        CommandLine commandLine = null;
+        try {
+            commandLine = new DefaultParser().parse(options, args);
         }
-        if (RUNNING_MODEL.equals("yarn")) {
-            inputPathStr = "/user/mfj/input/lineitembih-part-1-sf-1.dat";
+        catch (ParseException exp) {
+            System.err.println("Parsing failed.  Reason: " + exp.getMessage());
+            // 输出帮助
+            helpFormatter.printHelp(cmdSyntax, options);
+            throw exp;
         }
+
+        // 执行命令
+        boolean definedOptExists = false;
+
+        // 准备实验数据
+        String dsOptVal = commandLine.getOptionValue(prepareData);
+        if (dsOptVal != null) {
+            String[] dataSetDesc = dsOptVal.split("-");
+            if (dataSetDesc[0].toLowerCase().equals("yttr")) {
+                definedOptExists = true;
+                DownloadYTTR2022.download();
+                ProcessYTTR2022.process();
+            }
+            else if (dataSetDesc[0].toLowerCase().equals("lineitem")) {
+                definedOptExists = true;
+                System.out.println("Generating TPC-BiH is not supported in this version!");
+            }
+            else {
+                System.err.printf("\"%s\" data set is not supported yet!", dsOptVal);
+            }
+        }
+
         
-        LoadDataExecutor executor = new LoadDataExecutorBuilder()
-            .intoTable("lineitembih")
-            .fromPath(inputPathStr, "csv")
-            .withProperties(CsvInputMapper.SEPARATORCHAR_CONF_NAME, "|")
-            .withParallelNum(2)
-            .build();
-            
-        executor.execute();
+        
+        // 如果全是没有定义过的选项或者单独输入help，输出帮助
+        if (definedOptExists == false) {
+            helpFormatter.printHelp(cmdSyntax, options);
+        }
+
     }
 }

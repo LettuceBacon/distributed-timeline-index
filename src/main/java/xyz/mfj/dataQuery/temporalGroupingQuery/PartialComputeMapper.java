@@ -185,7 +185,6 @@ public class PartialComputeMapper
         // 具体的实现，在部分聚合计算时，需要将时间区间边界之前的时间点上的数据复制一份，并使用时间区间边界作为key，这是因为在时间区间边界上，这个stripe仍然具有有效的聚合数值，在另一个reducer中需要计算，见aggregateOnTime函数
         
         Text mapperIdStripeId = new Text(mapperId + "_" + stripeId);
-        BitSet validRows = new BitSet(stripeRowBatch.size);
         
         Iterator<VRF> iter = appPrd.getIndex().iterator(
             appPrd, stripeRowBatch, innerSchema
@@ -196,86 +195,51 @@ public class PartialComputeMapper
         ElemGetter[] stripeRowBatchGetters = ColumnVectorEnhance.createElemGetters(innerSchema);
         int includedColNum = includedColIds.size();
         
-        
+        moveWindowMarginAfter(startTime);
         // 遍历timeline，直到startTime之后一个时间版本
         while (iter.hasNext()) {
             vrf = iter.next();
             nextV = vrf.getVersion();
-            if (currentV == null || !nextV.equals(currentV)) {
-                // 取到一个新时间版本
-                if (nextV.compareTo(startTime) > 0) {
-                    break;
-                }
-                currentV = nextV;
+            
+            if (nextV.compareTo(startTime) <= 0) {
+                // if (!nextV.equals(currentV)) {
+                //     currentV = nextV;
+                // } // TODO：
+                aggregateRow(stripeRowBatch, 
+                    stripeRowBatchGetters, 
+                    includedColNum, 
+                    includedColIds, 
+                    vrf.getRowId(), 
+                    vrf.getFlag());
             }
-            
-            // 如果flag与TimelineIndex.STARTIDX相等，即表示vrf是一个有效时间起始时间，设rowId为有效行，
-            // 即Bitset.set(rowId, true)；否则设rowId为无效，即Bitset.set(rowId, false)。
-            validRows.set(vrf.getRowId(), vrf.getFlag() == TimelineIndex.STARTIDX);
-        }
-        
-        // 根据validRows执行收集，收集所有小于等于startTime的元组
-        int[] validRowIds = validRows.stream().toArray();
-        for (int i = 0; i < validRowIds.length; i++) {
-            collectRow(stripeRowBatch, 
-                stripeRowBatchGetters, 
-                includedColNum, 
-                includedColIds, 
-                validRowIds[i],
-                TimelineIndex.STARTIDX);
-        }
-        
-        moveWindowMarginAfter(startTime);
-        if (currentV != null) {
-            // currentV <= startTime && startTime < nextV
-            aggregateOnTime(startTime, nextV, context, mapperIdStripeId, windowMargin);
-        }
-        // 如果current == null，startTime < nextV == firstV，firstV之前没有数据
-
-        if (nextV.compareTo(endTime) >= 0) {
-            // nextV >= endTime --> StartTime < endTime <= nextV
-            return;
-        }
-        
-        currentV = nextV;
-        // 收集刚刚好大于startTime的元组
-        collectRow(stripeRowBatch, 
-            stripeRowBatchGetters, 
-            includedColNum, 
-            includedColIds, 
-            vrf.getRowId(),
-            vrf.getFlag());
-        
-        while (iter.hasNext()) {
-            vrf = iter.next();
-            nextV = vrf.getVersion();
-            
-            if (currentV == null || !nextV.equals(currentV)) {
-                // 取到一个新时间版本
-                if (nextV.compareTo(endTime) >= 0) {
-                    // currentV < endTime <= nextV <= finalV
-                    aggregateOnTime(currentV, endTime, context, mapperIdStripeId, windowMargin);
-                    break;
+            else if (nextV.compareTo(startTime) > 0 && nextV.compareTo(endTime) < 0) {
+                if (!nextV.equals(currentV)) {
+                    if (currentV == null) {
+                        evaluateOnTime(startTime, nextV, context, mapperIdStripeId, windowMargin);
+                    }
+                    else {
+                        evaluateOnTime(currentV, nextV, context, mapperIdStripeId, windowMargin);
+                    }
+                    currentV = nextV;
                 }
-                // 否则执行聚合
-                aggregateOnTime(currentV, nextV, context, mapperIdStripeId, windowMargin);
-                currentV = nextV;
+                aggregateRow(stripeRowBatch, 
+                    stripeRowBatchGetters, 
+                    includedColNum, 
+                    includedColIds, 
+                    vrf.getRowId(), 
+                    vrf.getFlag());
             }
-            
-            // 收集currentV到nextV上的元组
-            collectRow(stripeRowBatch, 
-                stripeRowBatchGetters, 
-                includedColNum, 
-                includedColIds, 
-                vrf.getRowId(), 
-                vrf.getFlag());
-            
-            // 如果flag与TimelineIndex.STARTIDX相等，即表示vrf是一个有效时间起始时间，设rowId为有效行，
-            // 即Bitset.set(rowId, true)；否则设rowId为无效，即Bitset.set(rowId, false)。
-            // validRows.set(vrf.getRowId(), vrf.getFlag() == TimelineIndex.STARTIDX);
-            
+            else {
+                if (currentV == null) {
+                    evaluateOnTime(startTime, endTime, context, mapperIdStripeId, windowMargin);
+                }
+                else {
+                    evaluateOnTime(currentV, endTime, context, mapperIdStripeId, windowMargin);
+                }
+                break;
+            }
         }
-
+            
         // 如果 !iter.hasNext()，currentV == nextV == finalV < endTime，finalV之后没有数据
         
         for (int j = 0; j < aggregators.length; ++j) {
@@ -287,7 +251,7 @@ public class PartialComputeMapper
         sumTime += (eTime - sTime);
     }
     
-    private final void collectRow(
+    private final void aggregateRow(
         VectorizedRowBatch srcRowBatch,
         ElemGetter[] srcGetters,
         int includedColNum,
@@ -338,7 +302,7 @@ public class PartialComputeMapper
         }
     }
     
-    private final void aggregateOnTime(Comparable currentV, Comparable nextV,
+    private final void evaluateOnTime(Comparable currentV, Comparable nextV,
         Mapper<NullWritable, EnhancedVectorizedRowBatch, OrcKey, OrcValue>.Context context,
         Text mapperIdStripeId, Comparable windowMargin
     ) throws IOException, InterruptedException {
